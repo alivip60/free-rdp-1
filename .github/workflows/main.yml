@@ -1,21 +1,61 @@
-name: RDP-1-MT
+name: RDP (ngrok)
 
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 360   # حد أقصى 6 ساعات للجلسة
     steps:
-      - name: Download ngrok
+      - name: Download ngrok (v3)
         run: |
-          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
-          Expand-Archive ngrok.zip
-          ./ngrok.exe authtoken YOUR_AUTH_TOKEN
+          Invoke-WebRequest "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath .\ngrok
 
-      - name: Enable RDP
+      - name: Auth with ngrok
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          net user kamel123 MyStrong123 /add
-          net localgroup administrators kamel123 /add
+          .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+
+      - name: Enable RDP and create user
+        run: |
+          # تفعيل RDP + فتح الجدار الناري
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          ./ngrok.exe tcp 3389
+          # مصادقة NLA (لو واجهت مشكلة اتصال لاحقًا نقدر نخليها 0)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1
+
+          # إنشاء/تحديث مستخدم إداري مع كلمة مرور قوية
+          $user = "kamel123"
+          $pass = "MyStrong123!"
+          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
+            net user $user $pass /add
+            net localgroup administrators $user /add
+          } else {
+            net user $user $pass
+          }
+
+      - name: Start ngrok TCP tunnel on 3389
+        run: |
+          Start-Process -FilePath ".\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+          # انتظر لحظات لبدء واجهة ngrok المحلية
+          Start-Sleep -Seconds 8
+
+          # جرّب الحصول على رابط النفق وطباعته
+          try {
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+            $url = ($tunnels.tunnels | Where-Object {$_.proto -eq "tcp"}).public_url
+            Write-Host "NGROK_TCP_URL=$url"
+            if ($url) {
+              $addr = $url -replace '^tcp://',''
+              Write-Host "RDP => $addr | User: kamel123 | Pass: MyStrong123!"
+            }
+          } catch {
+            Write-Host "ngrok tunnel info not available yet."
+          }
+
+      - name: Keep session alive
+        run: |
+          # يخلّي الجلسة شغالة لحد 6 ساعات إضافية عشان تلحق تتّصل
+          Start-Sleep -Seconds 21600
